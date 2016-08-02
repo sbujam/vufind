@@ -65,7 +65,7 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      *
      * @var object
      */
-    protected $driver;
+    protected $driver = null;
 
     /**
      * ILS configuration
@@ -89,6 +89,13 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
     protected $titleHoldsMode = 'disabled';
 
     /**
+     * Driver plugin manager
+     *
+     * @var \VuFind\ILS\Driver\PluginManager
+     */
+    protected $driverManager;
+
+    /**
      * Configuration loader
      *
      * @var \VuFind\Config\PluginManager
@@ -107,28 +114,15 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
         \VuFind\ILS\Driver\PluginManager $driverManager,
         \VuFind\Config\PluginManager $configReader
     ) {
-        $this->config = $config;
-        $this->configReader = $configReader;
-        if (!isset($this->config->driver)) {
+        if (!isset($config->driver)) {
             throw new \Exception('ILS driver setting missing.');
         }
-        $service = $this->config->driver;
-        if (!$driverManager->has($service)) {
-            throw new \Exception('ILS driver missing: ' . $service);
+        if (!$driverManager->has($config->driver)) {
+            throw new \Exception('ILS driver missing: ' . $config->driver);
         }
-        $this->setDriver($driverManager->get($service));
-
-        // If we're configured to fail over to the NoILS driver, we need
-        // to test if the main driver is working.
-        if (isset($this->config->loadNoILSOnFailure)
-            && $this->config->loadNoILSOnFailure
-        ) {
-            try {
-                $this->getDriver();
-            } catch (\Exception $e) {
-                $this->setDriver($driverManager->get('NoILS'));
-            }
-        }
+        $this->config = $config;
+        $this->configReader = $configReader;
+        $this->driverManager = $driverManager;
     }
 
     /**
@@ -152,24 +146,58 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      */
     public function getDriverClass()
     {
-        return get_class($this->driver);
+        return get_class($this->getDriver(false));
+    }
+
+    /**
+     * Initialize the ILS driver.
+     *
+     * @return void
+     */
+    protected function initializeDriver()
+    {
+        $this->driver->setConfig($this->getDriverConfig());
+        $this->driver->init();
+        $this->driverInitialized = true;
+    }
+
+    /**
+     * Are we configured to fail over to the NoILS driver on error?
+     *
+     * @return bool
+     */
+    protected function hasNoILSFailover()
+    {
+        // If we're configured to fail over to the NoILS driver, do so now:
+        return isset($this->config->loadNoILSOnFailure)
+            && $this->config->loadNoILSOnFailure;
     }
 
     /**
      * Get access to the driver object.
      *
+     * @param bool $init Should we initialize the driver (if necessary), or load it
+     * "as-is"?
+     *
      * @throws \Exception
      * @return object
      */
-    public function getDriver()
+    public function getDriver($init = true)
     {
-        if (!$this->driverInitialized) {
-            if (!is_object($this->driver)) {
-                throw new \Exception('ILS driver missing.');
+        if (null === $this->driver) {
+            $this->setDriver($this->driverManager->get($this->config->driver));
+        }
+        if (!$this->driverInitialized && $init) {
+            try {
+                $this->initializeDriver();
+            } catch (\Exception $e) {
+                if ($this->hasNoILSFailover()) {
+                    $this->setDriver($this->driverManager->get('NoILS'));
+                    $this->initializeDriver();
+                } else {
+                    throw $e;
+                }
             }
-            $this->driver->setConfig($this->getDriverConfig());
-            $this->driver->init();
-            $this->driverInitialized = true;
         }
         return $this->driver;
     }
@@ -671,6 +699,12 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      */
     public function getOfflineMode()
     {
+        // If we have NoILS failover configured, force driver initialization so
+        // we can know we are checking the offline mode against the correct driver.
+        if ($this->hasNoILSFailover()) {
+            $this->getDriver();
+        }
+
         // Graceful degradation -- return false if no method supported.
         return $this->checkCapability('getOfflineMode')
             ? $this->getDriver()->getOfflineMode() : false;
@@ -732,13 +766,19 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
     public function checkCapability($method, $params = [], $throw = false)
     {
         try {
-            // First check that the function is callable without the expense of
-            // initializing the driver:
-            if (is_callable([$this->getDriverClass(), $method])) {
+            // If we have NoILS failover disabled, we can check capabilities of
+            // the driver class without wasting time initializing it; if NoILS
+            // failover is enabled, we have to initialize the driver object now
+            // to be sure we are checking capabilities on the appropriate class.
+            $driverToCheck = $this->hasNoILSFailover()
+                ? $this->getDriver() : $this->getDriverClass();
+
+            // First check that the function is callable:
+            if (is_callable([$driverToCheck, $method])) {
                 // At least drivers implementing the __call() magic method must also
                 // implement supportsMethod() to verify that the method is actually
                 // usable:
-                if (method_exists($this->getDriverClass(), 'supportsMethod')) {
+                if (method_exists($driverToCheck, 'supportsMethod')) {
                     return $this->getDriver()->supportsMethod($method, $params);
                 }
                 return true;
