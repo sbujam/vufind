@@ -174,6 +174,27 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
     }
 
     /**
+     * If configured, fail over to the NoILS driver and return true; otherwise,
+     * return false.
+     *
+     * @return bool
+     */
+    protected function failOverToNoILS()
+    {
+        // Only fail over if we're configured to allow it and we haven't already
+        // done so!
+        if ($this->hasNoILSFailover()) {
+            $noILS = $this->driverManager->get('NoILS');
+            if (get_class($noILS) != $this->getDriverClass()) {
+                $this->setDriver($noILS);
+                $this->initializeDriver();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Get access to the driver object.
      *
      * @param bool $init Should we initialize the driver (if necessary), or load it
@@ -191,10 +212,7 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
             try {
                 $this->initializeDriver();
             } catch (\Exception $e) {
-                if ($this->hasNoILSFailover()) {
-                    $this->setDriver($this->driverManager->get('NoILS'));
-                    $this->initializeDriver();
-                } else {
+                if (!$this->failOverToNoILS()) {
                     throw $e;
                 }
             }
@@ -614,10 +632,17 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      */
     public function checkRequestIsValid($id, $data, $patron)
     {
-        if ($this->checkCapability(
-            'checkRequestIsValid', [$id, $data, $patron]
-        )) {
-            return $this->getDriver()->checkRequestIsValid($id, $data, $patron);
+        try {
+            if ($this->checkCapability(
+                'checkRequestIsValid', [$id, $data, $patron]
+            )) {
+                return $this->getDriver()->checkRequestIsValid($id, $data, $patron);
+            }
+        } catch (\Exception $e) {
+            if ($this->failOverToNoILS()) {
+                return call_user_func_array([$this, __METHOD__], func_get_args());
+            }
+            throw $e;
         }
         // If the driver has no checkRequestIsValid method, we will assume that
         // all requests are valid - failure can be handled later after the user
@@ -639,12 +664,19 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      */
     public function checkStorageRetrievalRequestIsValid($id, $data, $patron)
     {
-        if ($this->checkCapability(
-            'checkStorageRetrievalRequestIsValid', [$id, $data, $patron]
-        )) {
-            return $this->getDriver()->checkStorageRetrievalRequestIsValid(
-                $id, $data, $patron
-            );
+        try {
+            if ($this->checkCapability(
+                'checkStorageRetrievalRequestIsValid', [$id, $data, $patron]
+            )) {
+                return $this->getDriver()->checkStorageRetrievalRequestIsValid(
+                    $id, $data, $patron
+                );
+            }
+        } catch (\Exception $e) {
+            if ($this->failOverToNoILS()) {
+                return call_user_func_array([$this, __METHOD__], func_get_args());
+            }
+            throw $e;
         }
         // If the driver has no checkStorageRetrievalRequestIsValid method, we
         // will assume that the request is not valid
@@ -665,12 +697,19 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      */
     public function checkILLRequestIsValid($id, $data, $patron)
     {
-        if ($this->checkCapability(
-            'checkILLRequestIsValid', [$id, $data, $patron]
-        )) {
-            return $this->getDriver()->checkILLRequestIsValid(
-                $id, $data, $patron
-            );
+        try {
+            if ($this->checkCapability(
+                'checkILLRequestIsValid', [$id, $data, $patron]
+            )) {
+                return $this->getDriver()->checkILLRequestIsValid(
+                    $id, $data, $patron
+                );
+            }
+        } catch (\Exception $e) {
+            if ($this->failOverToNoILS()) {
+                return call_user_func_array([$this, __METHOD__], func_get_args());
+            }
+            throw $e;
         }
         // If the driver has no checkILLRequestIsValid method, we
         // will assume that the request is not valid
@@ -734,8 +773,15 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
     public function hasHoldings($id)
     {
         // Graceful degradation -- return true if no method supported.
-        return $this->checkCapability('hasHoldings', [$id])
-            ? $this->getDriver()->hasHoldings($id) : true;
+        try {
+            return $this->checkCapability('hasHoldings', [$id])
+                ? $this->getDriver()->hasHoldings($id) : true;
+        } catch (\Exception $e) {
+            if ($this->failOverToNoILS()) {
+                return call_user_func_array([$this, __METHOD__], func_get_args());
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -748,8 +794,15 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
     public function loginIsHidden()
     {
         // Graceful degradation -- return false if no method supported.
-        return $this->checkCapability('loginIsHidden')
-            ? $this->getDriver()->loginIsHidden() : false;
+        try {
+            return $this->checkCapability('loginIsHidden')
+                ? $this->getDriver()->loginIsHidden() : false;
+        } catch (\Exception $e) {
+            if ($this->failOverToNoILS()) {
+                return call_user_func_array([$this, __METHOD__], func_get_args());
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -839,10 +892,17 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      */
     public function __call($methodName, $params)
     {
-        if ($this->checkCapability($methodName, $params)) {
-            return call_user_func_array(
-                [$this->getDriver(), $methodName], $params
-            );
+        try {
+            if ($this->checkCapability($methodName, $params)) {
+                return call_user_func_array(
+                    [$this->getDriver(), $methodName], $params
+                );
+            }
+        } catch (\Exception $e) {
+            if ($this->failOverToNoILS()) {
+                return call_user_func_array([$this, __METHOD__], func_get_args());
+            }
+            throw $e;
         }
         throw new ILSException(
             'Cannot call method: ' . $this->getDriverClass() . '::' . $methodName
