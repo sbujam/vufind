@@ -1513,15 +1513,15 @@ class AjaxController extends AbstractBase
     protected function getIlsStatusAjax()
     {
         $this->disableSessionWrites();  // avoid session write timing bug
-        $offlineModeMsg = $this->params()->fromPost(
-            'offlineModeMsg',
-            $this->params()->fromQuery('offlineModeMsg')
-        );
-        if ($this->getILS()->getOfflineMode() == 'ils-offline') {
+        if ($this->getILS()->getOfflineMode(true) == 'ils-offline') {
+            $offlineModeMsg = $this->params()->fromPost(
+                'offlineModeMsg',
+                $this->params()->fromQuery('offlineModeMsg')
+            );
             return $this->output(
                 $this->getViewRenderer()->render(
                     'Helpers/ils-offline.phtml',
-                    $offlineModeMsg
+                    compact('offlineModeMsg')
                 ),
                 self::STATUS_OK
             );

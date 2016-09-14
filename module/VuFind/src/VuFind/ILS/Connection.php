@@ -103,6 +103,13 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
     protected $configReader;
 
     /**
+     * Is the current ILS driver failing?
+     *
+     * @var bool
+     */
+    protected $failing = false;
+
+    /**
      * Constructor
      *
      * @param \Zend\Config\Config              $config        Configuration
@@ -181,6 +188,8 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      */
     protected function failOverToNoILS()
     {
+        $this->failing = true;
+
         // Only fail over if we're configured to allow it and we haven't already
         // done so!
         if ($this->hasNoILSFailover()) {
@@ -733,10 +742,13 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
      *
      * This is responsible for returning the offline mode
      *
+     * @param bool $healthCheck Perform a health check in addition to consulting
+     * the ILS status?
+     *
      * @return string|bool "ils-offline" for systems where the main ILS is offline,
      * "ils-none" for systems which do not use an ILS, false for online systems.
      */
-    public function getOfflineMode()
+    public function getOfflineMode($healthCheck = false)
     {
         // If we have NoILS failover configured, force driver initialization so
         // we can know we are checking the offline mode against the correct driver.
@@ -744,9 +756,19 @@ class Connection implements TranslatorAwareInterface, LoggerAwareInterface
             $this->getDriver();
         }
 
+        // If we need to perform a health check, try to do a random item lookup
+        // before proceeding.
+        if ($healthCheck) {
+            $this->getStatus('1');
+        }
+
+        // If we're encountering failures, let's go into ils-offline mode if
+        // the ILS driver does not natively support getOfflineMode().
+        $default = $this->failing ? 'ils-offline' : false;
+
         // Graceful degradation -- return false if no method supported.
         return $this->checkCapability('getOfflineMode')
-            ? $this->getDriver()->getOfflineMode() : false;
+            ? $this->getDriver()->getOfflineMode() : $default;
     }
 
     /**
